@@ -1,0 +1,185 @@
+#include <stdio.h>
+#include "pico/stdlib.h"
+#include <hardware/pio.h>           // Biblioteca para manipulação de periféricos PIO
+#include "hardware/clocks.h"        // Biblioteca para controle de relógios do hardware
+#include "hardware/gpio.h"
+#include "hardware/pwm.h"
+#include "PassaOuRepassa.pio.h" // Biblioteca PIO para controle de LEDs WS2818B
+#include "anima.h"
+
+// Definições de constantes
+#define BUZZER1 21              // Define o pino 21 = Buzzer
+#define FPS 3                 // Taxa de quadros por segundo
+#define LED_COUNT 25            // Número de LEDs na matriz
+#define LED_PIN 7               // Pino GPIO conectado aos LEDs
+
+uint situacao=0;
+
+#define LED_G_PIN 11  
+#define LED_R_PIN 13  
+#define LED_B_PIN 12  
+#define Botao_A 5 // GPIO para botão A
+#define Botao_B 6 // GPIO para botão B
+volatile bool iniciar_animacao = false;
+
+PIO pio = pio0;   // Variável global para PIO
+uint sm;    // Variável global para state machine
+
+#define DEBOUNCE_DELAY 100  // Tempo de debounce para evitar múltiplas detecções de um único toque
+volatile uint32_t last_interrupt_time=0; // Armazena o tempo da última interrupção
+
+int frame_delay = 1000 / FPS; // Intervalo em milissegundos
+// Ordem da matriz de leds
+int ordem[] = {0, 1, 2, 3, 4, 9, 8,7, 6, 5, 10, 11, 12, 13, 14, 19, 18, 17, 16, 15 , 20, 21, 22, 23, 24};                 
+
+//imprimir valor binário
+void imprimir_binario(int num) {
+ int i;
+ for (i = 31; i >= 0; i--) {
+  (num & (1 << i)) ? printf("1") : printf("0");
+ }
+}
+
+//rotina para definição da intensidade de cores do led
+uint32_t matrix_rgb(double b, double r, double g)
+{
+  unsigned char R, G, B;
+  R = r * 255;
+  G = g * 255;
+  B = b * 255;
+  return (G << 24) | (R << 16) | (B << 8);
+}
+
+void init_pwm(uint gpio) {
+    gpio_set_function(gpio, GPIO_FUNC_PWM); // Configura o GPIO como PWM
+    uint slice_num = pwm_gpio_to_slice_num(gpio);
+    pwm_set_clkdiv(slice_num, 125.0f);     // Define o divisor do clock para 1 MHz
+    pwm_set_wrap(slice_num, 1000);        // Define o TOP para frequência de 1 kHz
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), 0); // Razão cíclica inicial
+    pwm_set_enabled(slice_num, true);     // Habilita o PWM
+}
+
+void set_buzzer_tone(uint gpio, uint freq) {
+    uint slice_num = pwm_gpio_to_slice_num(gpio);
+    uint top = 1000000 / freq;            // Calcula o TOP para a frequência desejada
+    pwm_set_wrap(slice_num, top);
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), top / 2); // 50% duty cycle
+}
+
+void stop_buzzer(uint gpio) {
+    uint slice_num = pwm_gpio_to_slice_num(gpio);
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), 0); // Desliga o PWM
+}
+
+void apagar_matrizLEDS(PIO pio, uint sm) {
+    for (uint i = 0; i < LED_COUNT; ++i) {
+        pio_sm_put_blocking(pio, sm, matrix_rgb(0.0, 0.0, 0.0)); // Envia cor preta (LEDs apagados)
+    }
+}
+
+//rotina para acionar a matrix de leds - ws2812b
+void desenho_pio(int desenho[][25], PIO pio, uint sm) {
+    uint32_t valor_led;
+            situacao = situacao+1;
+            if(situacao>2){situacao=0;}    
+    for (int16_t k = 0; k < 6; k++) {
+        for (int16_t i = 0; i < LED_COUNT; i++) {
+                
+                switch (desenho[k][ordem[24-i]]) {
+                    case 0: 
+                        valor_led = matrix_rgb(0.0, 0.0, 0.0); 
+                        break;
+                    case 1:
+                        valor_led = matrix_rgb(0.1, .1, 0.1); //branco
+                        break;                        
+                    case 2: 
+                        switch (situacao){    // 0=normal, 1=alerta; 2=critica  
+                            case 0:
+                                valor_led = matrix_rgb(0, 0, .1); //verde
+                                //situacao=1;
+                                break;
+                            case 1:
+                                valor_led = matrix_rgb(.1, 0, 0); //azul
+                                //situacao=2;
+                                break;
+                            default:
+                                valor_led = matrix_rgb(0, .1, 0); //vermelho
+                                //situacao=0;
+                                break;
+                        }
+
+                }
+                pio_sm_put_blocking(pio, sm, valor_led);
+                //situacao=situacao+1;
+        }
+        imprimir_binario(valor_led);
+
+        set_buzzer_tone(BUZZER1, 440); // Frequência 440 Hz (Nota Lá)        
+        sleep_ms(100); 
+        stop_buzzer(BUZZER1);  
+        sleep_ms(frame_delay - 100); 
+    }
+    // Apaga todos os LEDs no final da animação
+    apagar_matrizLEDS(pio, sm);    
+}
+
+
+
+
+
+
+
+
+// Função de interrupção para tratar eventos nos botões
+void gpio_irq_handler(uint gpio, uint32_t events)
+{   
+    uint32_t current_time = to_ms_since_boot(get_absolute_time()); // Obtém o tempo atual
+    if (current_time - last_interrupt_time > DEBOUNCE_DELAY) {
+        last_interrupt_time = current_time; // Atualiza o tempo da última interrupção
+        if (gpio == Botao_A) { // Se Botão A for pressionado
+            iniciar_animacao = true;  // Define a flag para rodar a animação
+        }
+    }
+}
+
+int main() {
+    
+    gpio_init(BUZZER1);
+    gpio_set_dir(BUZZER1, GPIO_OUT);
+    init_pwm(BUZZER1);
+
+    bool ok;
+    
+    //coloca a frequência de clock para 128 MHz, facilitando a divisão pelo clock
+    ok = set_sys_clock_khz(128000, false);
+
+    stdio_init_all(); // Inicializa a comunicação serial
+
+  // Configuração dos botões
+  gpio_init(Botao_B);
+  gpio_set_dir(Botao_B, GPIO_IN);
+  gpio_pull_up(Botao_B); 
+  gpio_init(Botao_A);
+  gpio_set_dir(Botao_A, GPIO_IN);
+  gpio_pull_up(Botao_A);
+
+    printf("iniciando a transmissão PIO");
+    if (ok) printf("clock set to %ld\n", clock_get_hz(clk_sys));
+
+    //configurações da PIO
+    uint offset = pio_add_program(pio, &PassaOuRepassa_program);
+    uint sm = pio_claim_unused_sm(pio, true);
+    PassaOuRepassa_program_init(pio, sm, offset, LED_PIN);
+
+  // Configuração das interrupções nos botões
+  gpio_set_irq_enabled_with_callback(Botao_B,GPIO_IRQ_EDGE_FALL, true,&gpio_irq_handler);
+  gpio_set_irq_enabled_with_callback(Botao_A,GPIO_IRQ_EDGE_FALL, true,&gpio_irq_handler);    
+
+while (true) {
+    if (iniciar_animacao) {  // Se a flag for verdadeira
+        iniciar_animacao = false;  // Reseta a flag
+        desenho_pio(desenho, pio, sm); // Executa a animação
+    }
+    sleep_ms(50); // Pequeno atraso para evitar uso excessivo da CPU
+}
+} 

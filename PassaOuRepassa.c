@@ -141,7 +141,6 @@ void desenhoLora_pio(PIO pio, uint sm) {
                 pio_sm_put_blocking(pio, sm, leds[ordem[i]]);
             }
             sleep_ms(500); // Mantém o padrão visível
-            //apagar_matrizLEDS(pio, sm); // Apaga os LEDs antes do próximo ciclo
         }
     }
 }
@@ -192,8 +191,9 @@ int main() {
     pwm_set_clkdiv(led_slice_num, 125.0f);
     pwm_set_enabled(led_slice_num, true);
     
-    bool ok;
+    bool parada_critica=false;
 
+    bool ok;
 
     // Configura o clock para 128 MHz
     ok = set_sys_clock_khz(128000, false);
@@ -209,6 +209,12 @@ int main() {
     gpio_init(Botao_A);
     gpio_set_dir(Botao_A, GPIO_IN);
     gpio_pull_up(Botao_A);
+
+    // Configuração do LED RGB VERMELHO
+    gpio_init(LED_R_PIN);
+    gpio_set_dir(LED_R_PIN, GPIO_OUT);
+    gpio_put(LED_R_PIN, false); 
+
 
     char buffer[20]; // Buffer para armazenar a string formatada no display
 
@@ -281,9 +287,12 @@ while (true) {
 
             // **Se o estado atual for igual ao anterior, imprime a repetição**
             if (estado_atual == ultimo_estado) {
-                if (estado_atual == 'A') {
-                    printf("Possivel Problema de Obstrução- Continua alta a velocidade da esteira\n");
-                    desenhoLora_pio(pio, sm);
+                if (estado_atual == 'A' || estado_atual == 'B') {
+                    //desativa esteira (não é necessario desativar o sensor (botão A) porque v=0)
+                    if(estado_atual == 'A'){printf("Possivel Problema de Obstrução- Continua alta a velocidade da esteira\n");};
+                    if(estado_atual == 'A'){printf("Possivel Problema de Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");};
+                    pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
+                    gpio_put(LED_R_PIN, true);  //indica parada crítica
                     for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
                         set_buzzer_tone(BUZZER1, 1000); // Frequência mais alta (1 kHz)
                         sleep_ms(200);
@@ -295,20 +304,8 @@ while (true) {
                         stop_buzzer(BUZZER1);
                         sleep_ms(100);
                     }                 
-                } else if (estado_atual == 'B') {
-                    printf("Possivel Problema de Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");
-                    desenhoLora_pio(pio, sm);
-                    for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
-                        set_buzzer_tone(BUZZER1, 1000); // Frequência mais alta (1 kHz)
-                        sleep_ms(200);
-                        stop_buzzer(BUZZER1);
-                        sleep_ms(100);
-                        
-                        set_buzzer_tone(BUZZER1, 800); // Frequência um pouco menor
-                        sleep_ms(200);
-                        stop_buzzer(BUZZER1);
-                        sleep_ms(100);
-                    }                  
+                    desenhoLora_pio(pio, sm); // envia status pelo LORA para tomar medidas
+                    parada_critica=true;
                 }
             }
 
@@ -319,7 +316,7 @@ while (true) {
 
         // Atualiza o display
         ssd1306_fill(&ssd, false);
-        ssd1306_draw_string(&ssd, "Embarcatech", 8, 6);
+        ssd1306_draw_string(&ssd, "Embarcatech", 18, 6);
         ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
         
         sprintf(buffer, "VL:%.2f", velocidade_L);
@@ -327,6 +324,10 @@ while (true) {
         
         sprintf(buffer, "VE:%.2f", velocidade_E);
         ssd1306_draw_string(&ssd, buffer, 12, 38);
+
+        if(parada_critica){
+            ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 6);
+        }
 
         ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
         ssd1306_send_data(&ssd);

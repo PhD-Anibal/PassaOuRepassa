@@ -5,7 +5,6 @@
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
 #include "PassaOuRepassa.pio.h" // Biblioteca PIO para controle de LEDs WS2818B
-#include "anima.h"
 #include "hardware/i2c.h"
 #include "lib/ssd1306.h"
 #include "lib/font.h" 
@@ -18,8 +17,8 @@
 
 #define LED_G_PIN 11  
 #define LED_R_PIN 13  
-#define LED_B_PIN 12  
-#define Botao_A 5 // GPIO para botão A
+#define LED_B_PIN 12  // a intensidade indica que tão rápido vai a esteira
+#define Botao_A 5 // GPIO para botão A simula o sensor de deteção de latas passando
 #define Botao_B 6 // GPIO para botão B
 
 volatile bool iniciar_animacao = false;
@@ -64,14 +63,7 @@ uint32_t matrix_rgb(double b, double r, double g) {
     return (G << 24) | (R << 16) | (B << 8);
 }
 
-void init_pwm(uint gpio) {
-    gpio_set_function(gpio, GPIO_FUNC_PWM); // Configura o GPIO como PWM
-    uint slice_num = pwm_gpio_to_slice_num(gpio);
-    pwm_set_clkdiv(slice_num, 125.0f);     // Define o divisor do clock para 1 MHz
-    pwm_set_wrap(slice_num, 1000);        // Define o TOP para frequência de 1 kHz
-    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), 0); // Razão cíclica inicial
-    pwm_set_enabled(slice_num, true);     // Habilita o PWM
-}
+
 
 void set_buzzer_tone(uint gpio, uint freq) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
@@ -115,6 +107,46 @@ void desenho_pio(PIO pio, uint sm) {
     apagar_matrizLEDS(pio, sm);
 }
 
+// Rotina para acionar a matriz de leds - ws2812b
+void desenhoLora_pio(PIO pio, uint sm) {
+    uint32_t leds[LED_COUNT] = {0}; // Inicializa todos os LEDs apagados
+    int ordem[] = {0, 1, 2, 3, 4, 9, 8, 7, 6, 5, 10, 11, 12, 13, 14, 19, 18, 17, 16, 15, 20, 21, 22, 23, 24};
+
+    for (int repetir = 0; repetir < 3;repetir++){  // 3 vezes o sinal de Wi-Fi
+        for (int sinal = 0; sinal < 3; sinal++) {
+            // Apaga todos os LEDs antes de acender o próximo sinal
+            for (int i = 0; i < LED_COUNT; i++) {
+                leds[i] = 0;
+            }
+
+            // Define os LEDs de acordo com o nível do "sinal WiFi"
+            if (sinal == 0) {
+                leds[ordem[2]] = matrix_rgb(0, 0, 0.01);
+            }
+            if (sinal == 1) {
+                leds[ordem[1]] = matrix_rgb(0.01, 0, 0);
+                leds[ordem[3]] = matrix_rgb(0.01, 0, 0);
+                leds[ordem[7]] = matrix_rgb(0.01, 0, 0);
+            }
+            if (sinal == 2) {
+                leds[ordem[5]] = matrix_rgb(0, 0.01, 0);
+                leds[ordem[9]] = matrix_rgb(0, 0.01, 0);
+                leds[ordem[11]] = matrix_rgb(0, 0.01, 0);
+                leds[ordem[12]] = matrix_rgb(0, 0.01, 0);
+                leds[ordem[13]] = matrix_rgb(0, 0.01, 0);
+            }
+
+            // Envia os dados para os LEDs na ordem correta
+            for (int i = 0; i < LED_COUNT; i++) {
+                pio_sm_put_blocking(pio, sm, leds[ordem[i]]);
+            }
+            sleep_ms(500); // Mantém o padrão visível
+            //apagar_matrizLEDS(pio, sm); // Apaga os LEDs antes do próximo ciclo
+        }
+    }
+}
+
+
 // Função de interrupção para botões
 void gpio_irq_handler(uint gpio, uint32_t events) {
     uint32_t current_time = to_ms_since_boot(get_absolute_time());
@@ -143,14 +175,31 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
 int main() {
     gpio_init(BUZZER1);
     gpio_set_dir(BUZZER1, GPIO_OUT);
-    init_pwm(BUZZER1);
+    
+    // Configuração do PWM para o BUZZER1
+    gpio_set_function(BUZZER1, GPIO_FUNC_PWM); // Configura o GPIO como PWM
+    uint slice_num = pwm_gpio_to_slice_num(BUZZER1);
+    pwm_set_clkdiv(slice_num, 125.0f);     // Define o divisor do clock para 1 MHz
+    pwm_set_wrap(slice_num, 1000);        // Define o TOP para frequência de 1 kHz
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(BUZZER1), 0); // Razão cíclica inicial
+    pwm_set_enabled(slice_num, true);     // Habilita o PWM    
 
+    // Configuração do PWM para o LED RGB Azul
+    gpio_set_function(LED_B_PIN, GPIO_FUNC_PWM);
+    uint led_slice_num = pwm_gpio_to_slice_num(LED_B_PIN);
+    uint led_channel = pwm_gpio_to_channel(LED_B_PIN);
+    pwm_set_wrap(led_slice_num, 1000);
+    pwm_set_clkdiv(led_slice_num, 125.0f);
+    pwm_set_enabled(led_slice_num, true);
+    
     bool ok;
+
 
     // Configura o clock para 128 MHz
     ok = set_sys_clock_khz(128000, false);
 
     stdio_init_all(); // Inicializa a comunicação serial
+
 
     // Configuração dos botões
     gpio_init(Botao_B);
@@ -193,43 +242,97 @@ int main() {
     gpio_set_irq_enabled_with_callback(Botao_A, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
 
 uint8_t index = 0; // Índice para armazenar velocidades
+uint32_t tempo_ajuste = 0; // Guarda o tempo do último ajuste da esteira
+char ultimo_estado = 'N'; // N = Normal, A = Alta, B = Baixa
 
-    while (true) {
-        if (iniciar_animacao) {  // Se a flag for verdadeira
-            //velocidade_E = 5.6;  // velocidade inicial da esteira 5,6cm/segundo
-            iniciar_animacao = false;  // Reseta a flag
-            desenho_pio(pio, sm); // Executa a animação
+while (true) {
+    if (iniciar_animacao) {  
+        iniciar_animacao = false;  
+        desenho_pio(pio, sm); 
 
-            // Atualiza o array circular de velocidades
-            velocidades_L[index] = velocidade_L; 
-            index = (index + 1) % 3; // Avança para a próxima posição circular
+        // Atualiza o array circular de velocidades
+        velocidades_L[index] = velocidade_L; 
+        index = (index + 1) % 3; 
 
-            // Calcula a média das 3 últimas velocidades
-            float soma = velocidades_L[0] + velocidades_L[1] + velocidades_L[2];
-            float media = soma / 3;
+        // Calcula a média das 3 últimas velocidades
+        float soma = velocidades_L[0] + velocidades_L[1] + velocidades_L[2];
+        float media = soma / 3;
 
-            // Exibe mensagens com base na média das ultimas 3 velocidades das latas
+        uint32_t tempo_atual = to_ms_since_boot(get_absolute_time());
+
+        // **Verifica se já passaram 6 segundos desde o último ajuste**
+        if (tempo_atual - tempo_ajuste >= 6000) {  
+            char estado_atual = 'N'; // Assume que está normal
+            
             if (media < 0.15) {
                 velocidade_E = 6.16;
-            } else if (media > 0.19) {
+                pwm_set_chan_level(led_slice_num, led_channel, 1000);
+                estado_atual = 'A'; // Alta velocidade
+            } 
+            else if (media > 0.19) {
                 velocidade_E = 5.04;
-            } else { // Se estiver entre 0.15 e 0.19
+                pwm_set_chan_level(led_slice_num, led_channel, 100);
+                estado_atual = 'B'; // Baixa velocidade
+            } 
+            else { 
                 velocidade_E = 5.6;
+                pwm_set_chan_level(led_slice_num, led_channel, 500);
             }
 
-            // Atualiza o conteúdo do display com animações
-            ssd1306_fill(&ssd, false); // Limpa o display
-            ssd1306_draw_string(&ssd, "Embarcatech", 8, 6); // Desenha uma string
+            // **Se o estado atual for igual ao anterior, imprime a repetição**
+            if (estado_atual == ultimo_estado) {
+                if (estado_atual == 'A') {
+                    printf("Possivel Problema de Obstrução- Continua alta a velocidade da esteira\n");
+                    desenhoLora_pio(pio, sm);
+                    for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
+                        set_buzzer_tone(BUZZER1, 1000); // Frequência mais alta (1 kHz)
+                        sleep_ms(200);
+                        stop_buzzer(BUZZER1);
+                        sleep_ms(100);
+                        
+                        set_buzzer_tone(BUZZER1, 800); // Frequência um pouco menor
+                        sleep_ms(200);
+                        stop_buzzer(BUZZER1);
+                        sleep_ms(100);
+                    }                 
+                } else if (estado_atual == 'B') {
+                    printf("Possivel Problema de Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");
+                    desenhoLora_pio(pio, sm);
+                    for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
+                        set_buzzer_tone(BUZZER1, 1000); // Frequência mais alta (1 kHz)
+                        sleep_ms(200);
+                        stop_buzzer(BUZZER1);
+                        sleep_ms(100);
+                        
+                        set_buzzer_tone(BUZZER1, 800); // Frequência um pouco menor
+                        sleep_ms(200);
+                        stop_buzzer(BUZZER1);
+                        sleep_ms(100);
+                    }                  
+                }
+            }
 
-            ssd1306_draw_string(&ssd, "Velocidade:", 8, 18); // Desenha a string formatada
-            sprintf(buffer, "VL:%.2f", velocidade_L); // Formata a string corretamente
-            ssd1306_draw_string(&ssd, buffer, 12, 28); // Desenha a string formatada
-            sprintf(buffer, "VE:%.2f", velocidade_E); // Formata a string corretamente
-            ssd1306_draw_string(&ssd, buffer, 12, 38); // Desenha a string formatada
-            ssd1306_rect(&ssd, 3, 3, 122, 60, true, false); // Desenha borda: um retângulo
-            ssd1306_send_data(&ssd); // Atualiza o display
+            // Atualiza o último estado e o tempo de ajuste
+            ultimo_estado = estado_atual;
+            tempo_ajuste = tempo_atual;
         }
 
-        sleep_ms(100); // Pequeno atraso para evitar uso excessivo da CPU
+        // Atualiza o display
+        ssd1306_fill(&ssd, false);
+        ssd1306_draw_string(&ssd, "Embarcatech", 8, 6);
+        ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
+        
+        sprintf(buffer, "VL:%.2f", velocidade_L);
+        ssd1306_draw_string(&ssd, buffer, 12, 28);
+        
+        sprintf(buffer, "VE:%.2f", velocidade_E);
+        ssd1306_draw_string(&ssd, buffer, 12, 38);
+
+        ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
+        ssd1306_send_data(&ssd);
     }
+
+    sleep_ms(100); 
+}
+
 }

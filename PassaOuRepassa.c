@@ -29,10 +29,6 @@ uint sm;    // Variável global para state machine
 #define DEBOUNCE_DELAY 200  // Tempo de debounce para evitar múltiplas detecções de um único toque
 volatile uint32_t last_interrupt_time=0; // Armazena o tempo da última interrupção
 volatile uint32_t time_atual=0; 
-float velocidade_L; // Velocidade Lata
-float velocidades_L[3] = {0, 0, 0}; // Array circular para armazenar as últimas 3 velocidades da lata
-float velocidade_E; // Velocidade Esteira
-const float espacamento=0.085; // cada lata mede 6.5cm diamentro e espaçamento das latas 2cm = 8.5cm=0.085m
 
 
 // Definição de pinos e configurações do hardware display
@@ -41,6 +37,29 @@ const float espacamento=0.085; // cada lata mede 6.5cm diamentro e espaçamento 
 #define I2C_SCL 15
 #define endereco 0x3C
 
+////////////////////////////////////
+#include "hardware/timer.h"  // Biblioteca para uso de timers
+#define INTERVALO_AMOSTRAGEM 6000  // Intervalo de 6 segundos em ms
+
+volatile float velocidades_L[3] = {0, 0, 0};  // Mantém as últimas 3 medições
+volatile uint8_t indice = 0; // Índice para armazenar velocidades
+volatile bool calcular_media = false;  // Flag para indicar quando calcular a média
+
+char ultimo_estado = 'N'; // N = Normal, A = Alta, B = Baixa
+
+float media; //=0.17;    //inicia a esteira na velocidade media
+float velocidade_E= 5.6;  //inicia a esteira na velocidade media da Esteira
+const float espacamento=0.085; // cada lata mede 6.5cm diamentro e espaçamento das latas 2cm = 8.5cm=0.085m
+char estado_atual = 'N'; // Assume que está normal
+char Parada_Critica= 'N';  // Assume que está normal
+
+// Função do temporizador
+bool callback_temporizador(struct repeating_timer *t) {
+    calcular_media = true;  // Sinaliza para calcular a média no loop principal
+    return true;  // Mantém o temporizador repetindo
+}
+////////////////////////////////////
+volatile bool iniciar_esteira=false; //inicia a esteira com botão B, para com parada crítica
 
 int frame_delay = 1000 / FPS; // Intervalo em milissegundos
 // Ordem da matriz de leds
@@ -64,12 +83,17 @@ uint32_t matrix_rgb(double b, double r, double g) {
 }
 
 
-
+// *********************
+// *********************
+// *********************
+// ********************* VOLUME DO BUZZER AUMENTAR
+// *********************
+// *********************
 void set_buzzer_tone(uint gpio, uint freq) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
     uint top = 1000000 / freq;            // Calcula o TOP para a frequência desejada
     pwm_set_wrap(slice_num, top);
-    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), top / 2); // 50% duty cycle
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), top / 200); // 50% duty cycle
 }
 
 void stop_buzzer(uint gpio) {
@@ -156,17 +180,27 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
         if (gpio == Botao_A) {
             if (time_atual > 0) { // Evita erro na primeira medição
                 float tempo_decorrido = (current_time - time_atual) / 1000.0; // Converte para segundos
-                velocidade_L = espacamento / tempo_decorrido; // Agora está correto!
-            } else {
-                velocidade_L = 0; // Primeira medição, sem referência anterior
+                velocidades_L[indice] = espacamento / tempo_decorrido; // Agora está correto!
+                indice = (indice + 1) % 3;  // Mantém buffer circular
             }
-
-            printf("Velocidade: %.2f m/s\n", velocidade_L);
-            printf("current_time: %u ms\n", current_time);
-            printf("time_atual: %u ms\n", time_atual);
-
-            time_atual = current_time;
             iniciar_animacao = true;
+        }else if(gpio == Botao_B){
+            if(!iniciar_esteira){ // se tenho que ativar a esteira entra no loop
+                // Atualiza o display, Limpa matriz de leds e RGB       
+                apagar_matrizLEDS(pio, sm);
+                gpio_put(LED_B_PIN, false);
+                gpio_put(LED_R_PIN, false);
+                calcular_media = false;
+                media=0.17;
+                ultimo_estado = 'N'; // N = Normal, A = Alta, B = Baixa
+                velocidade_E = 5.6;  //inicia a esteira na velocidade media
+                estado_atual = 'N'; // Assume que está normal
+                Parada_Critica= 'N';  // Assume que está normal
+                iniciar_esteira=true; //!iniciar_esteira;
+            }else{
+                iniciar_esteira=!iniciar_esteira;  
+            }
+            time_atual = current_time;
         }
     }
 }
@@ -190,8 +224,6 @@ int main() {
     pwm_set_wrap(led_slice_num, 1000);
     pwm_set_clkdiv(led_slice_num, 125.0f);
     pwm_set_enabled(led_slice_num, true);
-    
-    bool parada_critica=false;
 
     bool ok;
 
@@ -247,50 +279,54 @@ int main() {
     gpio_set_irq_enabled_with_callback(Botao_B, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
     gpio_set_irq_enabled_with_callback(Botao_A, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
 
+    //Temporizador para cálculo de velocidade
+    struct repeating_timer timer;
+    add_repeating_timer_ms(INTERVALO_AMOSTRAGEM, callback_temporizador, NULL, &timer);
+
 uint8_t index = 0; // Índice para armazenar velocidades
-uint32_t tempo_ajuste = 0; // Guarda o tempo do último ajuste da esteira
-char ultimo_estado = 'N'; // N = Normal, A = Alta, B = Baixa
+
 
 while (true) {
-    if (iniciar_animacao) {  
-        iniciar_animacao = false;  
-        desenho_pio(pio, sm); 
+    if(iniciar_esteira){
+        printf("Oi2: %d\n", iniciar_esteira); 
+        if (iniciar_animacao) {  
+            iniciar_animacao = false;  
+            desenho_pio(pio, sm); 
 
-        // Atualiza o array circular de velocidades
-        velocidades_L[index] = velocidade_L; 
-        index = (index + 1) % 3; 
+            if (calcular_media) {
+                calcular_media = false;  // Reseta a flag
 
-        // Calcula a média das 3 últimas velocidades
-        float soma = velocidades_L[0] + velocidades_L[1] + velocidades_L[2];
-        float media = soma / 3;
+                // Calcula a média das últimas 3 velocidades
+                float soma = velocidades_L[0] + velocidades_L[1] + velocidades_L[2];
+                media = soma / 3;
 
-        uint32_t tempo_atual = to_ms_since_boot(get_absolute_time());
+                printf("Média da Velocidade: %.2f m/s\n", media);
+                
+                if (media < 0.15) {
+                    if(estado_atual=='A'){Parada_Critica='O';}
+                    velocidade_E = 6.16;
+                    pwm_set_chan_level(led_slice_num, led_channel, 1000);
+                    estado_atual = 'A'; // Alta velocidade
+                } 
+                else if (media > 0.19) {
+                    if(estado_atual=='B'){Parada_Critica='S';}
+                    velocidade_E = 5.04;
+                    pwm_set_chan_level(led_slice_num, led_channel, 100);
+                    estado_atual = 'B'; // Baixa velocidade
+                } 
+                else { 
+                    velocidade_E = 5.6;
+                    pwm_set_chan_level(led_slice_num, led_channel, 500);
+                    estado_atual='N';
+                    Parada_Critica='N';
+                }
 
-        // **Verifica se já passaram 6 segundos desde o último ajuste**
-        if (tempo_atual - tempo_ajuste >= 6000) {  
-            char estado_atual = 'N'; // Assume que está normal
-            
-            if (media < 0.15) {
-                velocidade_E = 6.16;
-                pwm_set_chan_level(led_slice_num, led_channel, 1000);
-                estado_atual = 'A'; // Alta velocidade
-            } 
-            else if (media > 0.19) {
-                velocidade_E = 5.04;
-                pwm_set_chan_level(led_slice_num, led_channel, 100);
-                estado_atual = 'B'; // Baixa velocidade
-            } 
-            else { 
-                velocidade_E = 5.6;
-                pwm_set_chan_level(led_slice_num, led_channel, 500);
-            }
-
-            // **Se o estado atual for igual ao anterior, imprime a repetição**
-            if (estado_atual == ultimo_estado) {
-                if (estado_atual == 'A' || estado_atual == 'B') {
+                // **Se o estado atual for igual ao anterior, imprime a repetição**
+                if (Parada_Critica=='O'||Parada_Critica=='S') {
+                    
                     //desativa esteira (não é necessario desativar o sensor (botão A) porque v=0)
-                    if(estado_atual == 'A'){printf("Possivel Problema de Obstrução- Continua alta a velocidade da esteira\n");};
-                    if(estado_atual == 'A'){printf("Possivel Problema de Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");};
+                    if(Parada_Critica == 'O'){printf("Possivel Obstrução- Continua alta a velocidade da esteira\n");};
+                    if(Parada_Critica == 'S'){printf("Possivel Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");};
                     pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
                     gpio_put(LED_R_PIN, true);  //indica parada crítica
                     for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
@@ -305,35 +341,28 @@ while (true) {
                         sleep_ms(100);
                     }                 
                     desenhoLora_pio(pio, sm); // envia status pelo LORA para tomar medidas
-                    parada_critica=true;
+                    ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);
+                    iniciar_esteira=false;
                 }
+
+                // Atualiza o último estado e o tempo de ajuste
+                ultimo_estado = estado_atual;
             }
-
-            // Atualiza o último estado e o tempo de ajuste
-            ultimo_estado = estado_atual;
-            tempo_ajuste = tempo_atual;
+            // Atualiza o display
+            ssd1306_fill(&ssd, false);            
+            ssd1306_draw_string(&ssd, "Embarcatech", 18, 6);
+            ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
+            sprintf(buffer, "VL:%.2f", media);
+            ssd1306_draw_string(&ssd, buffer, 12, 28);
+            
+            sprintf(buffer, "VE:%.2f", velocidade_E);
+            ssd1306_draw_string(&ssd, buffer, 12, 38);
+            if(!iniciar_esteira){ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);}
+            ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
+            ssd1306_send_data(&ssd);
         }
 
-        // Atualiza o display
-        ssd1306_fill(&ssd, false);
-        ssd1306_draw_string(&ssd, "Embarcatech", 18, 6);
-        ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
-        
-        sprintf(buffer, "VL:%.2f", velocidade_L);
-        ssd1306_draw_string(&ssd, buffer, 12, 28);
-        
-        sprintf(buffer, "VE:%.2f", velocidade_E);
-        ssd1306_draw_string(&ssd, buffer, 12, 38);
-
-        if(parada_critica){
-            ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 6);
-        }
-
-        ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
-        ssd1306_send_data(&ssd);
     }
-
     sleep_ms(100); 
 }
-
 }

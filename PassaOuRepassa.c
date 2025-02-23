@@ -44,6 +44,7 @@ volatile uint32_t time_atual=0;
 volatile float velocidades_L[3] = {0, 0, 0};  // Mantém as últimas 3 medições
 volatile uint8_t indice = 0; // Índice para armazenar velocidades
 volatile bool calcular_media = false;  // Flag para indicar quando calcular a média
+volatile int contador_latas = 0;  // Contador de latas detectadas
 
 char ultimo_estado = 'N'; // N = Normal, A = Alta, B = Baixa
 
@@ -55,7 +56,8 @@ char Parada_Critica= 'N';  // Assume que está normal
 
 // Função do temporizador
 bool callback_temporizador(struct repeating_timer *t) {
-    calcular_media = true;  // Sinaliza para calcular a média no loop principal
+    printf("Latas detectadas nos últimos 6 segundos: %d\n", contador_latas);
+    calcular_media = true;
     return true;  // Mantém o temporizador repetindo
 }
 ////////////////////////////////////
@@ -178,11 +180,7 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
         last_interrupt_time = current_time;
 
         if (gpio == Botao_A) {
-            if (time_atual > 0) { // Evita erro na primeira medição
-                float tempo_decorrido = (current_time - time_atual) / 1000.0; // Converte para segundos
-                velocidades_L[indice] = espacamento / tempo_decorrido; // Agora está correto!
-                indice = (indice + 1) % 3;  // Mantém buffer circular
-            }
+            contador_latas++;
             iniciar_animacao = true;
         }else if(gpio == Botao_B){
             if(!iniciar_esteira){ // se tenho que ativar a esteira entra no loop
@@ -196,7 +194,8 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
                 velocidade_E = 5.6;  //inicia a esteira na velocidade media
                 estado_atual = 'N'; // Assume que está normal
                 Parada_Critica= 'N';  // Assume que está normal
-                iniciar_esteira=true; //!iniciar_esteira;
+                iniciar_esteira=true; //!iniciar_esteira; oi2
+                contador_latas = 0;
             }else{
                 iniciar_esteira=!iniciar_esteira;  
             }
@@ -288,35 +287,58 @@ uint8_t index = 0; // Índice para armazenar velocidades
 
 while (true) {
     if(iniciar_esteira){
-        printf("Oi2: %d\n", iniciar_esteira); 
-        if (iniciar_animacao) {  
-            iniciar_animacao = false;  
-            desenho_pio(pio, sm); 
+        //if (iniciar_animacao) {  
+        //    iniciar_animacao = false;  
+        //    desenho_pio(pio, sm); 
 
             if (calcular_media) {
-                calcular_media = false;  // Reseta a flag
-
-                // Calcula a média das últimas 3 velocidades
-                float soma = velocidades_L[0] + velocidades_L[1] + velocidades_L[2];
-                media = soma / 3;
-
+                calcular_media = false;  // Resetar flag
+                media = (float)contador_latas / (INTERVALO_AMOSTRAGEM / 1000);  // Divide pelo tempo em segundos
+                printf("Contou latas: %d", contador_latas);
+                contador_latas = 0;
+                
                 printf("Média da Velocidade: %.2f m/s\n", media);
                 
-                if (media < 0.15) {
-                    if(estado_atual=='A'){Parada_Critica='O';}
-                    velocidade_E = 6.16;
-                    pwm_set_chan_level(led_slice_num, led_channel, 1000);
-                    estado_atual = 'A'; // Alta velocidade
-                } 
-                else if (media > 0.19) {
-                    if(estado_atual=='B'){Parada_Critica='S';}
-                    velocidade_E = 5.04;
-                    pwm_set_chan_level(led_slice_num, led_channel, 100);
-                    estado_atual = 'B'; // Baixa velocidade
-                } 
-                else { 
+                if (media < 0.25) {  // se é menor que 1 lata cada 4 segundos
+                    if(estado_atual=='A'){ // se já esteve aqui parada crítica
+                        Parada_Critica='O';
+                    }else{
+                        // Aumeto suave até o top de 1000 que é velocidade da esteira 6.16
+                        for (int duty = 500; duty <= 1000; duty += 5) {
+                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                            sleep_ms(10);
+                        }
+                        velocidade_E = 6.16;
+                        estado_atual = 'A'; // Alta velocidade
+                    }
+                }
+                if (media > 0.5) {  // se é maior que 1 lata cada 2 segundos
+                    if(estado_atual=='B'){ // se já esteve aqui parada crítica
+                        Parada_Critica='S';
+                    }else{
+                        // Diminuição suave até o valor de 50 que é velocidade da esteira 5.04
+                        for (int duty = 500; duty >= 50; duty -= 5) {
+                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                            sleep_ms(10);
+                        }                          
+                        velocidade_E = 5.04;
+                        estado_atual = 'B'; // Baixa velocidade
+                     }
+                }
+                if (media >= 0.25 && media <= 0.5){ 
+                    if(estado_atual == 'B'){ //anteriormente esteve baixa?
+                        for (int duty = 50; duty <= 500; duty += 5) {
+                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                            sleep_ms(10);
+                        }
+                    }   
+                    if(estado_atual == 'A'){ //anteriormente esteve baixa?
+                        for (int duty = 1000; duty >= 500; duty -= 5) {
+                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                            sleep_ms(10);
+                        } 
+                    }  
                     velocidade_E = 5.6;
-                    pwm_set_chan_level(led_slice_num, led_channel, 500);
                     estado_atual='N';
                     Parada_Critica='N';
                 }
@@ -360,9 +382,10 @@ while (true) {
             if(!iniciar_esteira){ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);}
             ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
             ssd1306_send_data(&ssd);
-        }
+        //}
 
     }
     sleep_ms(100); 
 }
 }
+//Latas detectadas nos últimos

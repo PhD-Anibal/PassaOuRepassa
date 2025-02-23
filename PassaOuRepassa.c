@@ -8,6 +8,7 @@
 #include "hardware/i2c.h"
 #include "lib/ssd1306.h"
 #include "lib/font.h" 
+#include "hardware/adc.h" // joystic simulando sensor de umidade
 
 // Definições de constantes
 #define BUZZER1 21              // Define o pino 21 = Buzzer
@@ -20,8 +21,9 @@
 #define LED_B_PIN 12  // a intensidade indica que tão rápido vai a esteira
 #define Botao_A 5 // GPIO para botão A simula o sensor de deteção de latas passando
 #define Botao_B 6 // GPIO para botão B
+#define JOYSTICK_X_PIN 27  // GPIO para eixo X
 
-volatile bool iniciar_animacao = false;
+volatile bool botao_A_pressionado = false;
 
 PIO pio = pio0;   // Variável global para PIO
 uint sm;    // Variável global para state machine
@@ -181,7 +183,7 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
 
         if (gpio == Botao_A) {
             contador_latas++;
-            iniciar_animacao = true;
+            botao_A_pressionado = true;
         }else if(gpio == Botao_B){
             if(!iniciar_esteira){ // se tenho que ativar a esteira entra no loop
                 // Atualiza o display, Limpa matriz de leds e RGB       
@@ -204,6 +206,30 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
     }
 }
 
+void tratar_parada_critica(char Parada_Critica) {
+    //desativa esteira (não é necessario desativar o sensor (botão A) porque v=0)
+    if(Parada_Critica == 'O'){printf("Possivel Obstrução- Continua alta a velocidade da esteira\n");};
+    if(Parada_Critica == 'S'){printf("Possivel Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");};
+    if(Parada_Critica == 'U'){printf("Possivel Vazamento- Alta umidade na esteira\n");};
+    
+    gpio_put(LED_R_PIN, true);  //indica parada crítica
+    for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
+        set_buzzer_tone(BUZZER1, 1000); // Frequência mais alta (1 kHz)
+        sleep_ms(200);
+        stop_buzzer(BUZZER1);
+        sleep_ms(100);
+        
+        set_buzzer_tone(BUZZER1, 800); // Frequência um pouco menor
+        sleep_ms(200);
+        stop_buzzer(BUZZER1);
+        sleep_ms(100);
+    }                 
+    desenhoLora_pio(pio, sm); // envia status pelo LORA para tomar medidas
+
+    iniciar_esteira=false;
+}
+
+
 int main() {
     gpio_init(BUZZER1);
     gpio_set_dir(BUZZER1, GPIO_OUT);
@@ -224,6 +250,10 @@ int main() {
     pwm_set_clkdiv(led_slice_num, 125.0f);
     pwm_set_enabled(led_slice_num, true);
 
+    // Configuração do ADC do Joystick - sensor de umidade
+    adc_init();
+    adc_gpio_init(JOYSTICK_X_PIN);
+    uint16_t adc_value_x;
     bool ok;
 
     // Configura o clock para 128 MHz
@@ -286,106 +316,111 @@ uint8_t index = 0; // Índice para armazenar velocidades
 
 
 while (true) {
-    if(iniciar_esteira){
-        //if (iniciar_animacao) {  
-        //    iniciar_animacao = false;  
-        //    desenho_pio(pio, sm); 
-
-            if (calcular_media) {
-                calcular_media = false;  // Resetar flag
-                media = (float)contador_latas / (INTERVALO_AMOSTRAGEM / 1000);  // Divide pelo tempo em segundos
-                printf("Contou latas: %d", contador_latas);
-                contador_latas = 0;
-                
-                printf("Média da Velocidade: %.2f m/s\n", media);
-                
-                if (media < 0.25) {  // se é menor que 1 lata cada 4 segundos
-                    if(estado_atual=='A'){ // se já esteve aqui parada crítica
-                        Parada_Critica='O';
-                    }else{
-                        // Aumeto suave até o top de 1000 que é velocidade da esteira 6.16
-                        for (int duty = 500; duty <= 1000; duty += 5) {
-                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
-                            sleep_ms(10);
-                        }
-                        velocidade_E = 6.16;
-                        estado_atual = 'A'; // Alta velocidade
-                    }
-                }
-                if (media > 0.5) {  // se é maior que 1 lata cada 2 segundos
-                    if(estado_atual=='B'){ // se já esteve aqui parada crítica
-                        Parada_Critica='S';
-                    }else{
-                        // Diminuição suave até o valor de 50 que é velocidade da esteira 5.04
-                        for (int duty = 500; duty >= 50; duty -= 5) {
-                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
-                            sleep_ms(10);
-                        }                          
-                        velocidade_E = 5.04;
-                        estado_atual = 'B'; // Baixa velocidade
-                     }
-                }
-                if (media >= 0.25 && media <= 0.5){ 
-                    if(estado_atual == 'B'){ //anteriormente esteve baixa?
-                        for (int duty = 50; duty <= 500; duty += 5) {
-                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
-                            sleep_ms(10);
-                        }
-                    }   
-                    if(estado_atual == 'A'){ //anteriormente esteve baixa?
-                        for (int duty = 1000; duty >= 500; duty -= 5) {
-                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
-                            sleep_ms(10);
-                        } 
-                    }  
-                    velocidade_E = 5.6;
-                    estado_atual='N';
-                    Parada_Critica='N';
-                }
-
-                // **Se o estado atual for igual ao anterior, imprime a repetição**
-                if (Parada_Critica=='O'||Parada_Critica=='S') {
-                    
-                    //desativa esteira (não é necessario desativar o sensor (botão A) porque v=0)
-                    if(Parada_Critica == 'O'){printf("Possivel Obstrução- Continua alta a velocidade da esteira\n");};
-                    if(Parada_Critica == 'S'){printf("Possivel Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");};
-                    pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
-                    gpio_put(LED_R_PIN, true);  //indica parada crítica
-                    for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
-                        set_buzzer_tone(BUZZER1, 1000); // Frequência mais alta (1 kHz)
-                        sleep_ms(200);
-                        stop_buzzer(BUZZER1);
-                        sleep_ms(100);
-                        
-                        set_buzzer_tone(BUZZER1, 800); // Frequência um pouco menor
-                        sleep_ms(200);
-                        stop_buzzer(BUZZER1);
-                        sleep_ms(100);
-                    }                 
-                    desenhoLora_pio(pio, sm); // envia status pelo LORA para tomar medidas
-                    ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);
-                    iniciar_esteira=false;
-                }
-
-                // Atualiza o último estado e o tempo de ajuste
-                ultimo_estado = estado_atual;
-            }
-            // Atualiza o display
-            ssd1306_fill(&ssd, false);            
-            ssd1306_draw_string(&ssd, "Embarcatech", 18, 6);
-            ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
-            sprintf(buffer, "VL:%.2f", media);
-            ssd1306_draw_string(&ssd, buffer, 12, 28);
-            
-            sprintf(buffer, "VE:%.2f", velocidade_E);
-            ssd1306_draw_string(&ssd, buffer, 12, 38);
-            if(!iniciar_esteira){ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);}
-            ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
-            ssd1306_send_data(&ssd);
-        //}
-
+    if(botao_A_pressionado == true){
+        desenho_pio(pio, sm);
+        botao_A_pressionado =false;
     }
+        if(iniciar_esteira){
+                if (calcular_media) {
+                    calcular_media = false;  // Resetar flag
+                    media = (float)contador_latas / (INTERVALO_AMOSTRAGEM / 1000);  // Divide pelo tempo em segundos
+                    printf("Contou latas: %d", contador_latas);
+                    contador_latas = 0;
+                    
+                    printf("Média da Velocidade: %.2f m/s\n", media);
+                    
+                    if (media < 0.25) {  // se é menor que 1 lata cada 4 segundos
+                        if(estado_atual=='A'){ // se já esteve aqui parada crítica
+                            Parada_Critica='O';
+                        }else{
+                            // Aumeto suave até o top de 1000 que é velocidade da esteira 6.16
+                            for (int duty = 500; duty <= 1000; duty += 5) {
+                                pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                                sleep_ms(10);
+                            }
+                            velocidade_E = 6.16;
+                            estado_atual = 'A'; // Alta velocidade
+                        }
+                    }
+                    if (media > 0.5) {  // se é maior que 1 lata cada 2 segundos
+                        if(estado_atual=='B'){ // se já esteve aqui parada crítica
+                            Parada_Critica='S';
+                        }else{
+                            // Diminuição suave até o valor de 50 que é velocidade da esteira 5.04
+                            for (int duty = 500; duty >= 50; duty -= 5) {
+                                pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                                sleep_ms(10);
+                            }                          
+                            velocidade_E = 5.04;
+                            estado_atual = 'B'; // Baixa velocidade
+                        }
+                    }
+                    if (media >= 0.25 && media <= 0.5){ 
+                        if(estado_atual == 'B'){ //anteriormente esteve baixa?
+                            for (int duty = 50; duty <= 500; duty += 5) {
+                                pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                                sleep_ms(10);
+                            }
+                        }   
+                        if(estado_atual == 'A'){ //anteriormente esteve baixa?
+                            for (int duty = 1000; duty >= 500; duty -= 5) {
+                                pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                                sleep_ms(10);
+                            } 
+                        }  
+                        velocidade_E = 5.6;
+                        estado_atual='N';
+                        Parada_Critica='N';
+                    }
+
+                    // **Se o estado atual for igual ao anterior, imprime a repetição**
+                    if (Parada_Critica=='O'||Parada_Critica=='S') {
+                        pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
+                        tratar_parada_critica(Parada_Critica);
+                        ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);
+                    }
+
+                    // Atualiza o último estado e o tempo de ajuste
+                    ultimo_estado = estado_atual;
+                }
+                // Atualiza o display
+                ssd1306_fill(&ssd, false);            
+                ssd1306_draw_string(&ssd, "Embarcatech", 20, 6);
+                ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
+                sprintf(buffer, "V. Lata:%.2f", media);
+                ssd1306_draw_string(&ssd, buffer, 8, 18);
+                
+                sprintf(buffer, "V. Est.:%.2f", velocidade_E);
+                ssd1306_draw_string(&ssd, buffer, 8, 28);
+                if(!iniciar_esteira){ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);}
+                ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
+                
+
+                // Leitura do ADC eixo X e controle do LED Vermelho
+                adc_select_input(1);
+                adc_value_x = adc_read();
+                int humidade =adc_value_x*100/4096; // umidade maxima 100%
+                printf("Umidade: %d%%", humidade);
+                sprintf(buffer, "Umid.: %d%%", humidade);
+                ssd1306_draw_string(&ssd, buffer, 8, 38);
+                if(humidade>=60){
+                    printf("Umidade Acima do Normal");
+                    ssd1306_draw_string(&ssd, "Alta", 90, 38); //A=Alta
+                    //iniciar_esteira=false;
+                    }
+                if(humidade>=80){
+                    Parada_Critica == 'U'; //U = umidade
+                    pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
+                    tratar_parada_critica(Parada_Critica);
+                    ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);                  
+                    printf("Umidade Nivel Crítico");
+                    ssd1306_draw_string(&ssd, "Crit", 90, 38); //C=Critica
+                    }
+                
+                ssd1306_send_data(&ssd); // Desenha no display
+        }
+    //}
     sleep_ms(100); 
+
 }
 }
-//Latas detectadas nos últimos

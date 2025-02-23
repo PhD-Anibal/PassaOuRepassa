@@ -62,6 +62,7 @@ target_link_libraries(PassaOuRepassa
         hardware_clocks
         hardware_pwm
         hardware_i2c
+        hardware_adc
         )
 
 pico_add_extra_outputs(PassaOuRepassa)

@@ -167,14 +167,17 @@ void ssd1306_draw_char(ssd1306_t *ssd, char c, uint8_t x, uint8_t y)
     else if (c == ':') {
         index = 2 * 8; // Os dois pontos estão na posição 2 do array font[]
     }
+    else if (c == '%') {
+        index = 3 * 8; // Os dois pontos estão na posição 2 do array font[]
+    }    
     else if (c >= '0' && c <= '9') {
-        index = (c - '0' + 3) * 8; // Para números (começa na posição 3)
+        index = (c - '0' + 4) * 8; // Para números (começa na posição 4)
     }
     else if (c >= 'A' && c <= 'Z') {
-        index = (c - 'A' + 13) * 8; // Para letras maiúsculas (começa na posição 13)
+        index = (c - 'A' + 14) * 8; // Para letras maiúsculas (começa na posição 14)
     }
     else if (c >= 'a' && c <= 'z') {
-        index = (c - 'a' + 39) * 8; // Para letras minúsculas
+        index = (c - 'a' + 40) * 8; // Para letras minúsculas
     }
 
     // Desenhar caractere pixel a pixel

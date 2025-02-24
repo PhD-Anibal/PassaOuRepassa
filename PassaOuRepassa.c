@@ -55,13 +55,14 @@ volatile bool calcular_media = false;  // Flag para indicar quando calcular a m�
 volatile int contador_latas = 0;  // Contador de latas detectadas  
 
 // Estado da esteira e sistema  
-bool som_tocou = false;  // Flag para garantir que o som toque apenas uma vez
+bool inicio_esteira;  // Flag para o som e sinalização aconteça apenas ao ligar a esteira
 char ultimo_estado = 'N'; // 'N' = Normal, 'A' = Alta velocidade, 'B' = Baixa velocidade  
 float media;              // Média de velocidade da esteira  
 float velocidade_E = 5.6; // Velocidade inicial da esteira (m/s)  
 const float espacamento = 0.085; // Espaçamento entre as latas (6.5 cm diâmetro + 2 cm espaçamento = 8.5 cm = 0.085 m)  
 char estado_atual = 'N'; // Assume que está em estado normal  
 char Parada_Critica = 'N';  // Assume que não há parada crítica ('N' = Normal)  
+int humidade;
 
 // Controle de inicialização da esteira  
 volatile bool iniciar_esteira = false; // Esteira inicia com botão B, e para em caso de parada crítica  
@@ -89,6 +90,44 @@ void apagar_matrizLEDS(PIO pio, uint sm) {
         pio_sm_put_blocking(pio, sm, matrix_rgb(0.0, 0.0, 0.0)); // Envia cor preta (LEDs apagados)
     }
 }
+
+// Aviso de inicio da esteira, Ascende LEDs, da camada central até a borda
+void acender_sinal_inicio() {
+    uint32_t leds[LED_COUNT] = {0}; // Inicializa todos os LEDs apagados
+
+    // Índices dos LEDs organizados por camadas concêntricas (do centro para a borda)
+    int camadas[3][16] = {
+        {12}, // Centro
+        {7, 11, 13, 17, 6, 8, 16, 18}, // Segunda camada ao redor do centro
+        {2, 3, 4, 9, 14, 19, 24, 23, 22, 21, 20, 15, 10, 5, 0, 1} // Terceira camada (borda externa)
+    };
+
+    int tamanhos[] = {1, 8, 16}; // Tamanhos de cada camada
+
+    // Acende os LEDs de cada camada com uma pausa entre elas
+    for (int camada = 0; camada < 3; camada++) {
+        // Apaga todos os LEDs antes de acender a nova camada
+        for (int i = 0; i < LED_COUNT; i++) {
+            leds[i] = 0;
+        }
+
+        // Acende os LEDs da camada atual
+        for (int i = 0; i < tamanhos[camada]; i++) {
+            int index = camadas[camada][i]; // Obtém o índice correto da camada
+            leds[ordem[index]] = matrix_rgb(0.0, 0.0, 0.01); // Define cor azul
+        }
+
+        // Envia os dados para os LEDs na ordem correta
+        for (int i = 0; i < LED_COUNT; i++) {
+            pio_sm_put_blocking(pio, sm, leds[i]);
+        }
+
+        sleep_ms(200); // Tempo de espera entre camadas
+    }
+    // **Apaga os LEDs após a última iteração**
+    apagar_matrizLEDS(pio, sm);
+}
+
 
 // Controla a animação da matriz de LEDs simulando um efeito visual da passagem de latas pelo sensor
 void desenho_pio(PIO pio, uint sm) {
@@ -176,16 +215,18 @@ void som_inicio_atividades() {
         stop_buzzer(BUZZER1);
         sleep_ms(50);  // Pequena pausa entre os tons
     }
-    som_tocou = true;
+    inicio_esteira = true;
 }
 
 // Ativa alarmes e LEDs em caso de parada crítica da esteira
 void tratar_parada_critica(char Parada_Critica) {
     //desativa esteira (não é necessario desativar o sensor (botão A) porque v=0)
+    iniciar_esteira=false;
     if(Parada_Critica == 'O'){printf("Possivel Obstrução- Continua alta a velocidade da esteira\n");};
     if(Parada_Critica == 'S'){printf("Possivel Sobrecarga no Operario- Continua baixa a velocidade da esteira\n");};
     if(Parada_Critica == 'U'){printf("Possivel Vazamento- Alta umidade na esteira\n");};
-    
+    if(Parada_Critica == 'B'){printf("Botão de parar esteira foi acionado\n");};
+
     gpio_put(LED_R_PIN, true);  //indica parada crítica
     for (int i = 0; i < 3; i++) {  // Repetir 3 vezes para maior destaque
         set_buzzer_tone(BUZZER1, 1000); // Frequência mais alta (1 kHz)
@@ -199,13 +240,17 @@ void tratar_parada_critica(char Parada_Critica) {
         sleep_ms(100);
     }                 
     desenhoLora_pio(pio, sm); // envia status pelo LORA para tomar medidas
-
-    iniciar_esteira=false;
 }
 
 // Função chamada periodicamente pelo temporizador para exibir a contagem de latas.
 bool callback_temporizador(struct repeating_timer *t) {
+    printf("\n=== Atualização do sistema ===\n");
     printf("Latas detectadas nos últimos 6 segundos: %d\n", contador_latas);
+    printf("Velocidade da esteira: %.2f m/s\n", velocidade_E);
+    printf("Taxa de passagem: %.2f latas/s\n", media);
+    printf("Nível de umidade: %d%%\n", humidade);
+    printf("Velocidade da esteira (N-Normal, A-Alta, B-Baixa): %c\n", estado_atual);
+    printf("========================================================\n\n");    
     calcular_media = true;
     return true;
 }
@@ -223,7 +268,7 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
         }else if(gpio == Botao_B){
             if(!iniciar_esteira){ // se tenho que ativar a esteira entra no loop
                 // Atualiza o display, Limpa matriz de leds e RGB    
-                som_tocou = false;   
+                inicio_esteira = false;   
                 apagar_matrizLEDS(pio, sm);
                 gpio_put(LED_B_PIN, false);
                 gpio_put(LED_R_PIN, false);
@@ -235,8 +280,10 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
                 Parada_Critica= 'N';  // Assume que está normal
                 iniciar_esteira=true; //!iniciar_esteira; oi2
                 contador_latas = 0;
+                humidade=50;
             }else{                             
-                iniciar_esteira=!iniciar_esteira;
+                //iniciar_esteira=!iniciar_esteira; já está em parada critica
+                Parada_Critica='B';
             }
             
         }
@@ -321,18 +368,25 @@ int main() {
     while (true) {
         if(botao_A_pressionado == true){
             desenho_pio(pio, sm);
+            pwm_set_chan_level(led_slice_num, led_channel, 500); // PWM na velocidade media
             botao_A_pressionado =false;
         }
             if(iniciar_esteira){
+                if(Parada_Critica=='B'){
+                    tratar_parada_critica(Parada_Critica);
+                    pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
+                    ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);                  
+                } 
+                       
                   // Se o som ainda não foi tocado de inicio da esteira então toca
-                if (!som_tocou) {som_inicio_atividades();}
+                if (!inicio_esteira) {
+                    som_inicio_atividades();
+                    acender_sinal_inicio();
+                    }
                     if (calcular_media) {
                         calcular_media = false;  // Resetar flag
                         media = (float)contador_latas / (INTERVALO_AMOSTRAGEM / 1000);  // Divide pelo tempo em segundos
-                        printf("Contou latas: %d", contador_latas);
                         contador_latas = 0;
-                        
-                        printf("Média da Velocidade: %.2f m/s\n", media);
                         
                         if (media < 0.25) {  // se é menor que 1 lata cada 4 segundos
                             if(estado_atual=='A'){ // se já esteve aqui parada crítica
@@ -402,12 +456,10 @@ int main() {
                     // Leitura do ADC eixo X e controle do LED Vermelho
                     adc_select_input(1);
                     adc_value_x = adc_read();
-                    int humidade =adc_value_x*100/4096; // umidade maxima 100%
-                    printf("Umidade: %d%%", humidade);
+                    humidade =adc_value_x*100/4096; // umidade maxima 100%
                     sprintf(buffer, "Umid.: %d%%", humidade);
                     ssd1306_draw_string(&ssd, buffer, 8, 38);
                     if(humidade>=60){
-                        printf("Umidade Acima do Normal");
                         ssd1306_draw_string(&ssd, "***", 92, 38); //***=Alta
                         //iniciar_esteira=false;
                         }
@@ -416,8 +468,7 @@ int main() {
                         pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
                         tratar_parada_critica(Parada_Critica);
                         ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);                  
-                        printf("Umidade Nivel Crítico");
-                        ssd1306_draw_string(&ssd, "Crit", 90, 38); //C=Critica
+                        ssd1306_draw_string(&ssd, " * ", 90, 38); //*=Critica
                         }
                     
                     ssd1306_send_data(&ssd); // Desenha no display

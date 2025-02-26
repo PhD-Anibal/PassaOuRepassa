@@ -1,7 +1,7 @@
 # Passa ou Repassa
 # 🚀 Sistema Inteligente de Controle de Esteira para Indústria de Enlatados
 
-Este projeto implementa um **Sistema Inteligente de Controle de Esteira** utilizando o **RP2040 (Raspberry Pi Pico)**, que ajusta dinamicamente sua velocidade com base na frequência de chegada das latas e no nível de umidade detectado. Ele incorpora tecnologias IoT para comunicação remota e proporciona mais segurança e eficiência na linha de produção.
+Este projeto implementa um **Sistema Inteligente de Controle de Esteira** utilizando o **RP2040 (Raspberry Pi Pico W)**, que ajusta dinamicamente sua velocidade com base na frequência de chegada das latas e no nível de umidade detectado. Ele incorpora tecnologias IoT para comunicação remota e proporciona mais segurança e eficiência na linha de produção.
 
 ## 🎯 Funcionalidades
 
@@ -94,9 +94,9 @@ O código é modularizado e estruturado em:
 4. Conecte seu Raspberry Pi Pico e envie o firmware utilizando o ambiente de desenvolvimento adequado.
 
 
-## 📎 Esquematico das conexões:
+## 📎 Esquemático das conexões:
 Para ver o esquema de ligações do hardware, acesse o link:
-🔗 [Simulação no Wokwi](https://wokwi.com/projects/423742700160819201)
+🔗 [Esquemático no Wokwi](https://wokwi.com/projects/423742700160819201)
 
 ![conexoes](conexoes.jpg)
 

@@ -3,6 +3,12 @@
 
 Este projeto implementa um **Sistema Inteligente de Controle de Esteira** utilizando o **RP2040 (Raspberry Pi Pico W)**, que ajusta dinamicamente sua velocidade com base na frequência de chegada das latas e no nível de umidade detectado. Ele incorpora tecnologias IoT para comunicação remota e proporciona mais segurança e eficiência na linha de produção.
 
+## 📷 Demonstração em Vídeo
+
+Confira a execução do código no vídeo abaixo:
+
+🔗 Link de Youtube: [https://youtu.be/3_9x5joTef8](https://youtu.be/3_9x5joTef8)
+
 ## 🎯 Funcionalidades
 
 ✅ **Sensoriamento Inteligente**

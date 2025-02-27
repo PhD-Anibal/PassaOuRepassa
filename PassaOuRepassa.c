@@ -375,84 +375,85 @@ int main() {
                 tratar_parada_critica(Parada_Critica);
                 pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
                 ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);                  
-            } 
+            }else{
                     
-                // Se o som ainda não foi tocado de inicio da esteira então toca
-            if (!inicio_esteira) {
-                som_inicio_atividades();
-                acender_sinal_inicio();
-                pwm_set_chan_level(led_slice_num, led_channel, 500); // PWM na velocidade media
-            }
-            if (calcular_media) {
-                calcular_media = false;  // Resetar flag
-                media = (float)contador_latas / (INTERVALO_AMOSTRAGEM / 1000);  // Divide pelo tempo em segundos
-                contador_latas = 0;
+                    // Se o som ainda não foi tocado de inicio da esteira então toca
+                if (!inicio_esteira) {
+                    som_inicio_atividades();
+                    acender_sinal_inicio();
+                    pwm_set_chan_level(led_slice_num, led_channel, 500); // PWM na velocidade media
+                }
+                if (calcular_media) {
+                    calcular_media = false;  // Resetar flag
+                    media = (float)contador_latas / (INTERVALO_AMOSTRAGEM / 1000);  // Divide pelo tempo em segundos
+                    contador_latas = 0;
+                    
+                    if (media < 0.25) {  // se é menor que 1 lata cada 4 segundos
+                        if(estado_atual=='A'){ // se já esteve aqui parada crítica
+                            Parada_Critica='O';
+                        }else{
+                            // Aumeto suave até o top de 1000 que é velocidade da esteira 6.16
+                            for (int duty = 500; duty <= 1000; duty += 5) {
+                                pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                                sleep_ms(10);
+                            }
+                            velocidade_E = 6.16;
+                            estado_atual = 'A'; // Alta velocidade
+                        }
+                    }
+                    if (media > 0.5) {  // se é maior que 1 lata cada 2 segundos
+                        if(estado_atual=='B'){ // se já esteve aqui parada crítica
+                            Parada_Critica='S';
+                        }else{
+                            // Diminuição suave até o valor de 50 que é velocidade da esteira 5.04
+                            for (int duty = 500; duty >= 50; duty -= 5) {
+                                pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
+                                sleep_ms(10);
+                            }                          
+                            velocidade_E = 5.04;
+                            estado_atual = 'B'; // Baixa velocidade
+                        }
+                    }
+                    if (media >= 0.25 && media <= 0.5){ 
+                        // sobe ou desce a velocidade suavemente dependendo como esteve anteirormente
+                        if (estado_atual == 'B' || estado_atual == 'A') {
+                            int start = (estado_atual == 'B') ? 50 : 1000;
+                            int end = 500;
+                            int step = (estado_atual == 'B') ? 5 : -5;
+
+                            for (int duty = start; duty != end + step; duty += step) {
+                                pwm_set_chan_level(led_slice_num, led_channel, duty);
+                                sleep_ms(10);
+                            }
+                        } 
+                        velocidade_E = 5.6;
+                        estado_atual='N';
+                        Parada_Critica='N';
+                    }
+
+                    // **Se o estado atual for igual ao anterior, imprime a repetição**
+                    if (Parada_Critica=='O'||Parada_Critica=='S') {
+                        pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
+                        tratar_parada_critica(Parada_Critica);
+                        ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);
+                    }
+                    // Atualiza o último estado e o tempo de ajuste
+                    ultimo_estado = estado_atual;
+                }
+
+                // Atualiza o display
+                ssd1306_fill(&ssd, false);            
+                ssd1306_draw_string(&ssd, "Embarcatech", 20, 6);
+                ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
+                sprintf(buffer, "V. Lata:%.2f", media);
+                ssd1306_draw_string(&ssd, buffer, 8, 18);
                 
-                if (media < 0.25) {  // se é menor que 1 lata cada 4 segundos
-                    if(estado_atual=='A'){ // se já esteve aqui parada crítica
-                        Parada_Critica='O';
-                    }else{
-                        // Aumeto suave até o top de 1000 que é velocidade da esteira 6.16
-                        for (int duty = 500; duty <= 1000; duty += 5) {
-                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
-                            sleep_ms(10);
-                        }
-                        velocidade_E = 6.16;
-                        estado_atual = 'A'; // Alta velocidade
-                    }
-                }
-                if (media > 0.5) {  // se é maior que 1 lata cada 2 segundos
-                    if(estado_atual=='B'){ // se já esteve aqui parada crítica
-                        Parada_Critica='S';
-                    }else{
-                        // Diminuição suave até o valor de 50 que é velocidade da esteira 5.04
-                        for (int duty = 500; duty >= 50; duty -= 5) {
-                            pwm_set_chan_level(led_slice_num, led_channel, duty); // LED segue o mesmo padrão
-                            sleep_ms(10);
-                        }                          
-                        velocidade_E = 5.04;
-                        estado_atual = 'B'; // Baixa velocidade
-                    }
-                }
-                if (media >= 0.25 && media <= 0.5){ 
-                    // sobe ou desce a velocidade suavemente dependendo como esteve anteirormente
-                    if (estado_atual == 'B' || estado_atual == 'A') {
-                        int start = (estado_atual == 'B') ? 50 : 1000;
-                        int end = 500;
-                        int step = (estado_atual == 'B') ? 5 : -5;
-
-                        for (int duty = start; duty != end + step; duty += step) {
-                            pwm_set_chan_level(led_slice_num, led_channel, duty);
-                            sleep_ms(10);
-                        }
-                    } 
-                    velocidade_E = 5.6;
-                    estado_atual='N';
-                    Parada_Critica='N';
-                }
-
-                // **Se o estado atual for igual ao anterior, imprime a repetição**
-                if (Parada_Critica=='O'||Parada_Critica=='S') {
-                    pwm_set_chan_level(led_slice_num, led_channel, 0); // desliga servo motor
-                    tratar_parada_critica(Parada_Critica);
-                    ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);
-                }
-                // Atualiza o último estado e o tempo de ajuste
-                ultimo_estado = estado_atual;
+                sprintf(buffer, "V. Est.:%.2f", velocidade_E);
+                ssd1306_draw_string(&ssd, buffer, 8, 28);
+                if(!iniciar_esteira){ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);}
+                ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
+            
             }
-            // Atualiza o display
-            ssd1306_fill(&ssd, false);            
-            ssd1306_draw_string(&ssd, "Embarcatech", 20, 6);
-            ssd1306_draw_string(&ssd, "Velocidade:", 8, 18);
-            sprintf(buffer, "V. Lata:%.2f", media);
-            ssd1306_draw_string(&ssd, buffer, 8, 18);
-            
-            sprintf(buffer, "V. Est.:%.2f", velocidade_E);
-            ssd1306_draw_string(&ssd, buffer, 8, 28);
-            if(!iniciar_esteira){ssd1306_draw_string(&ssd, "PARADA CRITICA", 8, 50);}
-            ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
-            
-
             // Leitura do ADC eixo X e controle do LED Vermelho
             adc_select_input(1);
             adc_value_x = adc_read();
